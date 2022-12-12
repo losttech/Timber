@@ -73,22 +73,29 @@ import com.naman14.timber.helpers.MusicPlaybackTrack;
 import com.naman14.timber.lastfmapi.LastFmClient;
 import com.naman14.timber.lastfmapi.models.LastfmUserSession;
 import com.naman14.timber.lastfmapi.models.ScrobbleQuery;
+import com.naman14.timber.models.LrcEntry;
 import com.naman14.timber.permissions.Nammu;
 import com.naman14.timber.provider.MusicPlaybackState;
 import com.naman14.timber.provider.RecentStore;
 import com.naman14.timber.provider.SongPlayCount;
+import com.naman14.timber.utils.LrcUtils;
+import com.naman14.timber.utils.LyricsExtractor;
 import com.naman14.timber.utils.NavigationUtils;
 import com.naman14.timber.utils.PreferencesUtility;
 import com.naman14.timber.utils.TimberUtils;
 import com.naman14.timber.utils.TimberUtils.IdType;
 import com.nostra13.universalimageloader.core.ImageLoader;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.LinkedList;
+import java.util.List;
 import java.util.ListIterator;
 import java.util.Random;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.TreeSet;
 
 import de.Maxr1998.trackselectorlib.ModNotInstalledException;
@@ -369,6 +376,17 @@ public class MusicService extends Service {
         PreferencesUtility pref = PreferencesUtility.getInstance(this);
         mShowAlbumArtOnLockscreen = pref.getSetAlbumartLockscreen();
         mActivateXTrackSelector = pref.getXPosedTrackselectorEnabled();
+
+        lyricsTimer.scheduleAtFixedRate(new TimerTask() {
+            @Override
+            public void run() {
+                if (mIsSupposedToBePlaying) {
+                    synchronized (MusicService.this) {
+                        onPositionUpdate(position());
+                    }
+                }
+            }
+        }, 0, 50);
     }
 
     @SuppressWarnings("deprecation")
@@ -390,6 +408,7 @@ public class MusicService extends Service {
                         RemoteControlClient.FLAG_KEY_MEDIA_PAUSE |
                         RemoteControlClient.FLAG_KEY_MEDIA_PREVIOUS |
                         RemoteControlClient.FLAG_KEY_MEDIA_NEXT |
+                        RemoteControlClient.FLAG_KEY_MEDIA_POSITION_UPDATE |
                         RemoteControlClient.FLAG_KEY_MEDIA_STOP);
     }
 
@@ -438,6 +457,7 @@ public class MusicService extends Service {
     public void onDestroy() {
         if (D) Log.d(TAG, "Destroying service");
         super.onDestroy();
+        lyricsTimer.cancel();
         //Try to push LastFMCache
         if (LastfmUserSession.getSession(this).isLogedin()) {
             LastFmClient.getInstance(this).Scrobble(null);
@@ -1149,7 +1169,7 @@ public class MusicService extends Service {
             saveQueue(false);
         }
 
-        if (what.equals(PLAYSTATE_CHANGED)) {
+        if (what.equals(PLAYSTATE_CHANGED) || what.equals(META_CHANGED)) {
             updateNotification();
         }
 
@@ -1191,6 +1211,7 @@ public class MusicService extends Service {
     }
 
 
+    int fakeQueuePosition = 0;
     private void updateMediaSession(final String what) {
         int playState = mIsSupposedToBePlaying
                 ? PlaybackStateCompat.STATE_PLAYING
@@ -1218,13 +1239,15 @@ public class MusicService extends Service {
                 }
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                fakeQueuePosition++;
                 mSession.setMetadata(new MediaMetadataCompat.Builder()
                         .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, getArtistName())
                         .putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ARTIST, getAlbumArtistName())
                         .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, getAlbumName())
                         .putString(MediaMetadataCompat.METADATA_KEY_TITLE, getTrackName())
                         .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration())
-                        .putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER, getQueuePosition() + 1)
+                        .putLong(MediaMetadataCompat.METADATA_KEY_TRACK_NUMBER,
+                                (getQueuePosition() + fakeQueuePosition) % getQueue().length + 1)
                         .putLong(MediaMetadataCompat.METADATA_KEY_NUM_TRACKS, getQueue().length)
                         .putString(MediaMetadataCompat.METADATA_KEY_GENRE, getGenreName())
                         .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, albumArt)
@@ -1723,6 +1746,14 @@ public class MusicService extends Service {
             if (mCursor == null) {
                 return null;
             }
+
+            List<LrcEntry> lyrics = getLyrics();
+            if (lyrics != null && lyrics.size() > 0) {
+                int lineNo = LrcUtils.findShowLine(lyrics, mPlayer.position());
+                LrcEntry line = lyrics.get(lineNo);
+                return line.getText();
+            }
+
             return mCursor.getString(mCursor.getColumnIndexOrThrow(AudioColumns.TITLE));
         }
     }
@@ -1756,6 +1787,15 @@ public class MusicService extends Service {
             if (mCursor == null) {
                 return null;
             }
+
+            List<LrcEntry> lyrics = getLyrics();
+            if (lyrics != null && lyrics.size() > 0) {
+                int line = LrcUtils.findShowLine(lyrics, mPlayer.position()) + 1;
+                if (line < lyrics.size()) {
+                    return lyrics.get(line).getText();
+                }
+            }
+
             return mCursor.getString(mCursor.getColumnIndexOrThrow(AudioColumns.ARTIST));
         }
     }
@@ -1906,6 +1946,45 @@ public class MusicService extends Service {
 
     public boolean isPlaying() {
         return mIsSupposedToBePlaying;
+    }
+
+    long lastLine = -1;
+    final Timer lyricsTimer = new Timer();
+    void onPositionUpdate(long position) {
+        List<LrcEntry> lyrics = cachedLyrics;
+        Log.i("MusicService", "onPositionUpdate: " + position);
+        if (lyrics == null || lyrics.size() == 0) {
+            return;
+        }
+
+        long line = LrcUtils.findShowLine(lyrics, position);
+        if (line != lastLine) {
+            lastLine = line;
+            notifyChange(META_CHANGED);
+        }
+    }
+
+    long lyricsId = Long.MAX_VALUE;
+    List<LrcEntry> cachedLyrics;
+    private List<LrcEntry> getLyrics() {
+        long audioId = getAudioId();
+        if (lyricsId != audioId) {
+            cachedLyrics = loadLyrics();
+            lyricsId = audioId;
+        }
+
+        return cachedLyrics;
+    }
+
+    private List<LrcEntry> loadLyrics() {
+        String filename = mCursor.getString(mCursor.getColumnIndexOrThrow(AudioColumns.DATA));
+        if (filename == null) return null;
+
+        File mediaFile = new File(filename);
+        String lrc = LyricsExtractor.getSynchronizedLyrics(mediaFile);
+        if (lrc == null) return null;
+
+        return LrcUtils.parseLrc(lrc);
     }
 
     private void setIsSupposedToBePlaying(boolean value, boolean notify) {
@@ -2832,7 +2911,6 @@ public class MusicService extends Service {
         public int getAudioSessionId() throws RemoteException {
             return mService.get().getAudioSessionId();
         }
-
     }
 
     private class MediaStoreObserver extends ContentObserver implements Runnable {
