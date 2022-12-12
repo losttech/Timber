@@ -37,8 +37,16 @@ public class LrcEntry implements Comparable<LrcEntry> {
         this.text = text;
         this.secondText = secondText;
     }
+    /**
+     * Start time, in milliseconds.
+     */
     public long getTime() {
         return time;
+    }
+
+    public LrcEntry setTime(long timeMs) {
+        this.time = timeMs;
+        return this;
     }
 
     public float getOffset() {

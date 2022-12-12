@@ -147,6 +147,16 @@ public class LrcUtils {
         return entryList;
     }
 
+    public static void shift(List<LrcEntry> entryList, long offset) {
+        if (entryList == null) {
+            return;
+        }
+
+        for (LrcEntry entry : entryList) {
+            entry.setTime(Math.max(entry.getTime() + offset, 0));
+        }
+    }
+
     public static int findShowLine(List<LrcEntry> lyrics, long time) {
         int left = 0;
         int right = lyrics.size();

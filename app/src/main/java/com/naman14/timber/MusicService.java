@@ -1984,7 +1984,9 @@ public class MusicService extends Service {
         String lrc = LyricsExtractor.getSynchronizedLyrics(mediaFile);
         if (lrc == null) return null;
 
-        return LrcUtils.parseLrc(lrc);
+        List<LrcEntry> lyrics = LrcUtils.parseLrc(lrc);
+        LrcUtils.shift(lyrics, -80);
+        return lyrics;
     }
 
     private void setIsSupposedToBePlaying(boolean value, boolean notify) {
